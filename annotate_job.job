@@ -1,0 +1,28 @@
+#!/bin/bash
+#SBATCH --job-name="annotate_cognitive_distortions"
+#SBATCH --array=0-7  # 8 combinations: 2 models x 2 prompts x 2 temperatures
+#SBATCH --time=08:00:00
+#SBATCH --mem=128GB
+#SBATCH --partition=gpu
+#SBATCH --output=%x_%A_%a.out
+#SBATCH --error=%x_%A_%a.err
+
+# Load the Python module
+module load python3
+
+# Define model types, prompt types, and temperatures
+MODEL_TYPES=('gpt-4' 'gpt-4o')
+PROMPT_TYPES=('RBP' 'MLP')
+TEMPERATURES=(0.5 0.7)
+
+# Calculate indices based on SLURM_ARRAY_TASK_ID
+MODEL_INDEX=$((SLURM_ARRAY_TASK_ID / 4))
+PROMPT_INDEX=$(((SLURM_ARRAY_TASK_ID / 2) % 2))
+TEMP_INDEX=$((SLURM_ARRAY_TASK_ID % 2))
+
+MODEL_TYPE=${MODEL_TYPES[$MODEL_INDEX]}
+PROMPT_TYPE=${PROMPT_TYPES[$PROMPT_INDEX]}
+TEMPERATURE=${TEMPERATURES[$TEMP_INDEX]}
+
+# Run the Python script with arguments
+srun python3 annotate.py --model_type $MODEL_TYPE --prompt_type $PROMPT_TYPE --temperature $TEMPERATURE
