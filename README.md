@@ -21,10 +21,12 @@ This repository contains the data, annotations, and scripts for our LREC 2026 pa
 ├── create_combined_labels.py
 ├── Final_Labels/
 ├── splits/
-├── Filter_And_Split_Final_Labels.py
 ├── Train_And_Evaluate_Binary_Classification.py
 ├── Train_And_Evaluate_Multiclass_Classification.py
 ├── Train_And_Evaluate_Multilabel_Classification.py
+├── predict_binary.py
+├── predict_multiclass.py
+├── predict_multilabel.py
 └── README.md
 ```
 
@@ -52,11 +54,25 @@ Run once per model x temperature combination (4 times total: gpt4/0.5, gpt4/0.7,
 
 The annotations, Fleiss' Kappa scores, and final labels above are all provided in this repository, so you can inspect them directly and choose whichever model/prompt/temperature configuration fits your use case without re-running anything. The remaining sections below document the process for anyone who wants to replicate the full pipeline from that point onward.
 
-## Data Splits & Filtering
+## Classification
 
-We use `Filter_And_Split_Final_Labels.py` to split each of the 4 `Final_Labels` configuration files into train/dev/test using the fixed Id_Number lists in the `splits` folder (`train_ids.txt`, `dev_ids.txt`, `test_ids.txt`), and then remove rows with an ambiguous label (`Not sure if distortion or not`, `Not sure which distortion`, or `Others`) in either the `RLP_Label` or `MLP_Label` column.
+Each of the three classification scripts below takes a raw `Final_Labels` configuration CSV directly (not a pre-split train/dev/test set) and handles filtering, splitting, training, and evaluation internally:
 
-This filtering step is why the LLM-generated configurations end up smaller than the original data:
+- `Train_And_Evaluate_Binary_Classification.py` — Distortion vs. No Distortion
+- `Train_And_Evaluate_Multiclass_Classification.py` — single dominant distortion label per input (11 classes: the 10 CDs + "No Distortion" as an explicit class)
+- `Train_And_Evaluate_Multilabel_Classification.py` — all distortion labels present per input (10 CD classes; "No Distortion" is not a trained class — its absence is represented as an all-zero prediction, since independent per-label predictions could otherwise contradict each other, e.g. "No Distortion" and "Overgeneralization" both predicted present at once)
+
+Each script:
+1. Reads the given `--config_file` (one of the 4 files in `Final_Labels/`) and removes rows with an ambiguous label (`Not sure if distortion or not`, `Not sure which distortion`, or `Others`) in either `RLP_Label` or `MLP_Label`. This filtering is why the LLM-generated configurations end up smaller than the original data — see the table below.
+2. Splits into train/dev/test, either using the fixed Id_Number lists in `splits/` (`--split_method fixed_ids`, the default — reproduces the paper's exact split and is required for results comparable to the paper), or a fresh split on the filtered data (`--split_method random` — for new/unlabeled data with no existing ID lists; not paper-comparable).
+3. Trains and evaluates for a chosen `--model_type` (`bert` or `roberta`) and `--label_type` (`rlp`, `mlp`, or `golden`; multiclass supports `rlp`/`golden` only — MLP rows can carry many labels, making "first label = dominant" too weak an approximation for a single-label task).
+4. Trains across multiple seeds (`--seeds`, default the paper's 5 seeds — `42 123 456 789 1024`), saving trained models, predictions, confusion matrices (binary and multiclass), and aggregated (mean/std) validation and test metrics.
+
+All hyperparameters used in the paper (epochs, batch size, learning rate, evaluation strategy, best-model metric, early stopping patience) are exposed as CLI arguments with the paper's values as defaults, so they can be overridden without editing the script.
+
+Each script's own docstring documents its full argument list and gives two example commands: one that reproduces the paper's setup (5 seeds, fixed splits), and one quick single-seed smoke test (`--seeds 42`, a random split, fewer epochs) for checking that everything runs before committing to a full run.
+
+Resulting split sizes after ambiguous-label filtering (identical Id_Number → split assignment across all 4 configurations under `--split_method fixed_ids`, though row counts differ per configuration since each one's filtering removes a different subset of rows):
 
 | Configuration | Train | Dev | Test | Total |
 |---|---|---|---|---|
@@ -66,18 +82,18 @@ This filtering step is why the LLM-generated configurations end up smaller than 
 | GPT4o-0.5 | 1494 | 306 | 323 | 2123 |
 | GPT4o-0.7 | 1325 | 291 | 272 | 1888 |
 
-## Classification
+### Prediction
 
-We fine-tune MentalBERT and MentalRoBERTa on the filtered train/dev/test splits, framed as three separate classification tasks:
+Each classification script saves a self-describing checkpoint — label names are baked into the saved model's `config.json` (`id2label`/`label2id`), with a `label_classes.json` backup in the same folder — so predicting on new data doesn't require separately tracking a label list:
 
-- `Train_And_Evaluate_Binary_Classification.py` — Distortion vs. No Distortion
-- `Train_And_Evaluate_Multiclass_Classification.py` — single dominant distortion label per input
-- `Train_And_Evaluate_Multilabel_Classification.py` — all distortion labels present per input
+- `predict_binary.py` — Distortion vs. No Distortion, with a confidence score
+- `predict_multiclass.py` — single predicted label (of 11), with a confidence score
+- `predict_multilabel.py` — all predicted labels present (sigmoid threshold, default 0.5), or "No Distortion" if none exceed the threshold
 
-Each script trains and evaluates across 5 seeds, for a chosen `--model_type` (`bert` or `roberta`) and `--label_type` (`RLP_Label`, `MLP_Label`, or `golden_labels`; multiclass supports `RLP_Label`/`golden_labels` only), and saves trained models, predictions, confusion matrices (binary and multiclass), and aggregated (mean/std) validation and test metrics.
-
+Each takes `--model_path` (a saved checkpoint folder) and `--input_file` (a CSV with a text column), and writes predictions plus per-label probabilities to `--output_file`.
 
 ## Citation
+
 ```bibtex
 @inproceedings{sharma-etal-2026-consistent,
   title = {Towards Consistent Detection of Cognitive Distortions: LLM-Based Annotation and Dataset-Agnostic Evaluation},
@@ -93,7 +109,12 @@ Each script trains and evaluates across 5 seeds, for a chosen `--model_type` (`b
   abstract = {Text-based automated Cognitive Distortion detection is a challenging task due to its subjective nature, with low agreement scores observed even among expert human annotators, leading to unreliable annotations. We explore the use of Large Language Models (LLMs) as consistent and reliable annotators, and propose that multiple independent LLM runs can reveal stable labeling patterns despite the inherent subjectivity of the task. Furthermore, to fairly compare models trained on datasets with different characteristics, we introduce a dataset-agnostic evaluation framework using Cohen's kappa as an effect size measure. This methodology allows for fair cross-dataset and cross-study comparisons where traditional metrics like F1 score fall short. Our results show that GPT-4 can produce consistent annotations (Fleiss's Kappa = 0.78), resulting in improved test set performance for models trained on these annotations compared to those trained on human-labeled data. While human expert verification was inconclusive on our target dataset, our findings suggest that LLMs can offer a scalable and internally consistent alternative for generating training data that supports strong downstream performance in subjective NLP tasks.}
 }
 ```
-## Contact
-neha.sharma@ut.ee
 
-https://www.linkedin.com/in/danehasharma/
+
+Note: the underlying Therapist Q&A dataset (`Original_data.csv`) is sourced from [Kaggle](https://www.kaggle.com/datasets/arnmaud/therapist-qa) and remains subject to its own license/terms — this repository's license covers only the code and annotations we produced.
+
+## Contact
+
+Email: neha.sharma@ut.ee
+
+LinkedIn: [linkedin.com/in/danehasharma](https://www.linkedin.com/in/danehasharma)
